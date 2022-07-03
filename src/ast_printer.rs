@@ -1,4 +1,5 @@
 use crate::expr::Expr;
+use std::sync::Arc;
 
 pub fn print_ast(expr: Box<Expr>) -> String {
     match *expr {
@@ -18,6 +19,10 @@ pub fn print_ast(expr: Box<Expr>) -> String {
         Expr::Unary { operator, right } => {
             format!("({} {})", operator, print_ast(right))
         }
+        Expr::Variable { name } => {
+            format!("{}", name)
+        }
+        _ => "".to_owned(),
     }
 }
 
@@ -30,14 +35,14 @@ fn test_ast_printer() {
         left: Box::new(Unary {
             operator: Token {
                 token_type: TokenType::MINUS,
-                lexeme: "-".to_owned(),
+                lexeme: Arc::new("-".to_owned()),
                 line: 1,
             },
             right: Box::new(LiteralNode(Literal::Number(123f64))),
         }),
         operator: Token {
             token_type: TokenType::STAR,
-            lexeme: "*".to_owned(),
+            lexeme: Arc::new("*".to_owned()),
             line: 1,
         },
         right: Box::new(Grouping(Box::new(LiteralNode(Literal::Number(45.67))))),

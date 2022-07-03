@@ -1,6 +1,6 @@
 use phf::phf_map;
+use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::rc::Rc;
 use std::sync::Arc;
 use TokenType::*;
 
@@ -22,6 +22,33 @@ static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "var" => VAR,
     "while" => WHILE
 };
+
+#[derive(Debug)]
+pub struct ScanError {
+    line: usize,
+    msg: String,
+}
+
+impl ScanError {
+    fn new<T>(line: usize, msg: &str) -> Result<T, Self> {
+        Err(Self {
+            line,
+            msg: msg.to_string(),
+        })
+    }
+}
+
+impl Display for ScanError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Syntax error: [line {} + ] Error {}",
+            self.line, self.msg
+        )
+    }
+}
+
+impl Error for ScanError {}
 
 // #[derive(Display)]
 #[derive(Clone, Debug, PartialEq)]
@@ -76,11 +103,10 @@ pub enum TokenType {
 }
 
 // #[derive(Display)]
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct Token {
     pub(crate) token_type: TokenType,
-    pub(crate) lexeme: String,
+    pub(crate) lexeme: Arc<String>,
     pub(crate) line: usize,
 }
 
@@ -138,20 +164,20 @@ impl Scanner {
         ch
     }
 
-    pub fn scan_tokens(&mut self) -> &Vec<Token> {
+    pub fn scan_tokens(&mut self) -> Result<&Vec<Token>, ScanError> {
         while !self.is_at_end() {
             self.start = self.current;
-            self.scan_token();
+            self.scan_token()?;
         }
         self.tokens.push(Token {
             token_type: EOF,
-            lexeme: "".to_owned(),
+            lexeme: Arc::new("".to_owned()),
             line: self.line,
         });
-        &self.tokens
+        Ok(&self.tokens)
     }
 
-    fn scan_token(&mut self) {
+    fn scan_token(&mut self) -> Result<(), ScanError> {
         let c = self.advance();
         if let Some(ch) = c {
             let token = match ch {
@@ -213,7 +239,7 @@ impl Scanner {
                     None
                 }
                 '"' => {
-                    self.string();
+                    self.string()?;
                     None
                 }
                 ch => {
@@ -222,7 +248,7 @@ impl Scanner {
                     } else if ch.is_ascii_alphabetic() {
                         self.identifier();
                     } else {
-                        error_scan(self.line, "Unexpected character.");
+                        ScanError::new(self.line, "Unexpected character.")?;
                     }
                     None
                 }
@@ -231,7 +257,9 @@ impl Scanner {
                 self.add_token(token);
             }
         }
+        Ok(())
     }
+
     fn identifier(&mut self) {
         loop {
             match self.peek() {
@@ -273,7 +301,7 @@ impl Scanner {
         self.add_token(NUMBER(Literal::Number(val)));
     }
 
-    fn string(&mut self) {
+    fn string(&mut self) -> Result<(), ScanError> {
         while let Some(ch) = self.peek() {
             if ch == '"' || self.is_at_end() {
                 break;
@@ -284,11 +312,12 @@ impl Scanner {
             self.advance();
         }
         if self.is_at_end() {
-            error_scan(self.line, "Unterminated string.");
+            ScanError::new(self.line, "Unterminated string.")?;
         }
         self.advance();
         let val = self.source[self.start + 1..self.current - 1].to_owned();
         self.add_token(STRING(Literal::String(Arc::new(val))));
+        Ok(())
     }
 
     fn peek(&self) -> Option<char> {
@@ -316,20 +345,8 @@ impl Scanner {
         let lexeme = (&self.source[self.start..self.current]).to_owned();
         self.tokens.push(Token {
             token_type,
-            lexeme,
+            lexeme: Arc::new(lexeme),
             line: self.line,
         })
     }
-}
-
-pub(crate) fn error(token: &Token, msg: &str) -> ! {
-    report(token, "", msg)
-}
-
-fn error_scan(line: usize, msg: &str) {
-    eprintln!("[line {} + ] Error {}", line, msg);
-}
-fn report(token: &Token, where_: &str, msg: &str) -> ! {
-    eprintln!("[Token {:?} + ] Error {}: {}", token, where_, msg);
-    panic!()
 }

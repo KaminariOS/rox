@@ -12,9 +12,23 @@ pub enum Expr {
         operator: Token,
         right: Box<Expr>,
     },
+    Variable {
+        name: Token,
+    },
+    Assign {
+        name: Token,
+        value: Box<Expr>,
+    },
 }
 
 pub enum Stmt {
     Expression(Expr),
     Print(Expr),
+    Var {
+        name: Token,
+        initializer: Option<Expr>,
+    },
+    Block {
+        statements: Vec<Stmt>,
+    },
 }

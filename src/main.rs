@@ -4,6 +4,7 @@ use ansi_rgb::{green, Foreground};
 use clap::{arg, command};
 use rustyline::error::ReadlineError;
 use rustyline::Editor;
+use std::error::Error;
 use std::fs;
 
 mod ast_printer;
@@ -12,8 +13,10 @@ mod scanner;
 use crate::interpreter::{Interpreter, RuntimeError};
 use ast_printer::print_ast;
 
+mod environment;
 mod interpreter;
 mod parser;
+mod types;
 
 fn main() {
     let matches = command!()
@@ -29,20 +32,17 @@ fn main() {
 fn run_file(filename: &str) {
     println!("Running {}", filename);
     let contents = fs::read_to_string(filename).expect("Something went wrong reading the file");
-    run(&contents);
+    let mut interpreter = Interpreter::new();
+    run(&contents, &mut interpreter, false).expect("Error");
 }
 
-fn run(line: &str) -> Result<(), RuntimeError> {
+fn run(line: &str, interpreter: &mut Interpreter, repl: bool) -> Result<(), Box<dyn Error>> {
     let mut scanner = scanner::Scanner::new(line);
-    scanner.scan_tokens();
-    let mut parser = parser::Parser::new(scanner.tokens);
-    let statements = parser.parse();
-    if let Err(e) = Interpreter::interpret_stmt(&statements) {
-        println!("{}", e);
-        Err(e)
-    } else {
-        Ok(())
-    }
+    scanner.scan_tokens()?;
+    let mut parser = parser::Parser::new(scanner.tokens, repl);
+    let statements = parser.parse()?;
+    interpreter.interpret_stmt(&statements)?;
+    Ok(())
     // println!("{}", print_ast(expr))
 }
 
@@ -52,12 +52,15 @@ fn run_prompt() {
     if rl.load_history(history_path).is_err() {
         println!("No previous history.");
     }
+    let mut interpreter = Interpreter::new();
     loop {
         let read_line = rl.readline(&">> ".fg(green()).to_string());
         match read_line {
             Ok(line) => {
                 rl.add_history_entry(line.as_str());
-                run(&line);
+                if let Err(e) = run(&line, &mut interpreter, true) {
+                    eprintln!("{}", e);
+                };
             }
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");

@@ -1,9 +1,12 @@
+use crate::environment::Environment;
 use crate::expr::{Expr, Stmt};
 use crate::scanner::{Literal, Token, TokenType};
+use crate::types::Shared;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub enum Type {
     Primitive(Literal),
     Object,
@@ -25,7 +28,7 @@ pub struct RuntimeError {
 }
 
 impl RuntimeError {
-    fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
+    pub fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
         Err(Self {
             token,
             msg: msg.to_string(),
@@ -35,22 +38,30 @@ impl RuntimeError {
 
 impl Display for RuntimeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} {:?}", self.msg, self.token)
+        write!(f, "Runtime Error: {} {:?}", self.msg, self.token)
     }
 }
 
 impl Error for RuntimeError {}
 
-pub struct Interpreter {}
+pub struct Interpreter {
+    environment: Shared<Environment>,
+}
 
 impl Interpreter {
-    pub fn visit(expr: &Expr) -> Result<Type, RuntimeError> {
+    pub fn new() -> Self {
+        Self {
+            environment: Environment::new(None),
+        }
+    }
+
+    pub fn visit(&mut self, expr: &Expr) -> Result<Type, RuntimeError> {
         let res = match expr {
             Expr::LiteralNode(literal) => Type::Primitive(literal.clone()),
-            Expr::Grouping(expr) => Self::visit(expr)?,
+            Expr::Grouping(expr) => self.visit(expr)?,
             Expr::Unary { operator, right } => {
                 let token_type = &operator.token_type;
-                let right_val = Self::visit(right)?;
+                let right_val = self.visit(right)?;
                 match (token_type, right_val) {
                     (TokenType::MINUS, Type::Primitive(Literal::Number(num))) => {
                         Type::Primitive(Literal::Number(-num))
@@ -71,8 +82,8 @@ impl Interpreter {
                 operator,
             } => {
                 let token_type = &operator.token_type;
-                let left = Self::visit(left)?;
-                let right = Self::visit(right)?;
+                let left = self.visit(left)?;
+                let right = self.visit(right)?;
                 match [left, right] {
                     lr if *token_type == TokenType::EqualEqual
                         || *token_type == TokenType::BangEqual =>
@@ -114,25 +125,63 @@ impl Interpreter {
                     _ => RuntimeError::new(operator.clone(), "Unsupported binary operator")?,
                 }
             }
+            Expr::Variable { name } => {
+                let val = self
+                    .environment
+                    .borrow()
+                    .get(name)
+                    .and_then(|x| x)
+                    .unwrap_or(Type::Primitive(Literal::NIL));
+                val
+            }
+            Expr::Assign { name, value } => {
+                let val = self.visit(value)?;
+                self.environment.borrow_mut().assign(name, val.clone())?;
+                val
+            }
         };
         Ok(res)
     }
-    pub fn interpret_stmt(statements: &Vec<Stmt>) -> Result<(), RuntimeError> {
+    pub fn interpret_stmt(&mut self, statements: &Vec<Stmt>) -> Result<(), RuntimeError> {
         for statement in statements {
             match statement {
                 Stmt::Expression(expr) => {
-                    let val = Self::interpret(expr)?;
+                    let _ = self.interpret(expr)?;
                 }
                 Stmt::Print(expr) => {
-                    let val = Self::interpret(expr)?;
+                    let val = self.interpret(expr)?;
                     println!("{}", val);
+                }
+                Stmt::Var { name, initializer } => {
+                    let value = if let Some(init) = initializer {
+                        Some(self.interpret(init)?)
+                    } else {
+                        None
+                    };
+                    self.environment
+                        .borrow_mut()
+                        .define(name.lexeme.to_string(), value);
+                }
+                Stmt::Block { statements } => {
+                    self.execute_block(statements, self.environment.clone())?;
                 }
             }
         }
         Ok(())
     }
-    pub fn interpret(expr: &Expr) -> Result<Type, RuntimeError> {
-        let res = Self::visit(expr)?;
+    fn execute_block(
+        &mut self,
+        statements: &Vec<Stmt>,
+        previous: Shared<Environment>,
+    ) -> Result<(), RuntimeError> {
+        let env = Environment::new(Some(previous.clone()));
+        self.environment = env;
+        let res = self.interpret_stmt(statements);
+        self.environment = previous;
+        res
+    }
+    pub fn interpret(&mut self, expr: &Expr) -> Result<Type, RuntimeError> {
+        let res = self.visit(expr)?;
 
         Ok(res)
     }

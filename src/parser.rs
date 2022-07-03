@@ -1,112 +1,200 @@
 use crate::expr::{Expr, Stmt};
-use crate::scanner::{error, Literal, Token, TokenType, TokenType::*};
+use crate::scanner::{Literal, Token, TokenType, TokenType::*};
+use std::error::Error;
+use std::fmt::{Debug, Display, Formatter};
+use std::sync::Arc;
+
+#[derive(Debug)]
+pub struct StaticError {
+    token: Token,
+    msg: String,
+}
+
+impl StaticError {
+    fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
+        Err(Self {
+            token,
+            msg: msg.to_string(),
+        })
+    }
+}
+
+impl Display for StaticError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "StaticError: {} {:?}", self.msg, self.token)
+    }
+}
+
+impl Error for StaticError {}
 
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    repl: bool,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, current: 0 }
+    pub fn new(mut tokens: Vec<Token>, repl: bool) -> Self {
+        let len = tokens.len();
+        if !tokens.is_empty()
+            && repl
+            && tokens
+                .get(len - 2)
+                .filter(|x| x.token_type != SEMICOLON)
+                .is_some()
+        {
+            tokens.insert(
+                len - 1,
+                Token {
+                    token_type: SEMICOLON,
+                    lexeme: Arc::new(";".to_owned()),
+                    line: 1,
+                },
+            );
+            tokens.insert(
+                0,
+                Token {
+                    token_type: PRINT,
+                    lexeme: Arc::new("print".to_owned()),
+                    line: 1,
+                },
+            );
+        }
+        Self {
+            tokens,
+            current: 0,
+            repl,
+        }
     }
-    pub(crate) fn parse(&mut self) -> Vec<Stmt> {
+    pub(crate) fn parse(&mut self) -> Result<Vec<Stmt>, StaticError> {
         let mut stmts = vec![];
         while !self.is_at_end() {
-            stmts.push(self.statement());
+            stmts.push(self.declaration()?);
         }
-        stmts
-    }
-    fn statement(&mut self) -> Stmt {
-        if self.match_(vec![PRINT]) {
-            self.printStatement()
-        } else {
-            self.expressionStatement()
-        }
-    }
-    fn printStatement(&mut self) -> Stmt {
-        let expr = self.expression();
-        self.consume(SEMICOLON, "Expect ';' after value");
-        Stmt::Print(*expr)
-    }
-    fn expressionStatement(&mut self) -> Stmt {
-        let expr = self.expression();
-        self.consume(SEMICOLON, "Expect ';' after expression");
-        Stmt::Expression(*expr)
-    }
-    fn expression(&mut self) -> Box<Expr> {
-        self.equality()
+        Ok(stmts)
     }
 
-    fn equality(&mut self) -> Box<Expr> {
-        let mut expr = self.comparison();
+    fn statement(&mut self) -> Result<Stmt, StaticError> {
+        if self.match_(vec![PRINT]) {
+            self.print_statement()
+        } else if self.match_(vec![LeftBrace]) {
+            Ok(Stmt::Block {
+                statements: self.block()?,
+            })
+        } else {
+            self.expression_statement()
+        }
+    }
+
+    fn block(&mut self) -> Result<Vec<Stmt>, StaticError> {
+        let mut statements = vec![];
+        while !self.check(RightBrace) {
+            statements.push(self.declaration()?);
+        }
+        self.consume(RightBrace, "Expect '}' after block")?;
+        Ok(statements)
+    }
+
+    fn declaration(&mut self) -> Result<Stmt, StaticError> {
+        if self.match_(vec![VAR]) {
+            self.var_declaration()
+        } else {
+            self.statement()
+        }
+    }
+    fn var_declaration(&mut self) -> Result<Stmt, StaticError> {
+        let name = self.consume(IDENTIFIER, "Expect variable name.")?.clone();
+        let initializer = if self.match_(vec![EQUAL]) {
+            Some(*self.expression()?)
+        } else {
+            None
+        };
+        self.consume(SEMICOLON, "Expect ';' after variable declaration")?;
+        Ok(Stmt::Var { name, initializer })
+    }
+    fn print_statement(&mut self) -> Result<Stmt, StaticError> {
+        let expr = self.expression()?;
+        self.consume(SEMICOLON, "Expect ';' after value")?;
+        Ok(Stmt::Print(*expr))
+    }
+    fn expression_statement(&mut self) -> Result<Stmt, StaticError> {
+        let expr = self.expression()?;
+        self.consume(SEMICOLON, "Expect ';' after expression")?;
+        Ok(Stmt::Expression(*expr))
+    }
+    fn expression(&mut self) -> Result<Box<Expr>, StaticError> {
+        self.assignment()
+    }
+
+    fn equality(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = self.comparison()?;
         while self.match_(vec![BangEqual, EqualEqual]) {
             let operator = self.previous().clone();
-            let right = self.comparison();
+            let right = self.comparison()?;
             expr = Box::new(Expr::Binary {
                 left: expr,
                 operator,
                 right,
             });
         }
-        expr
+        Ok(expr)
     }
 
-    fn comparison(&mut self) -> Box<Expr> {
-        let mut expr = self.term();
+    fn comparison(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = self.term()?;
 
         while self.match_(vec![GREATER, GreaterEqual, LESS, LessEqual]) {
             let operator = self.previous().clone();
-            let right = self.term();
+            let right = self.term()?;
             expr = Box::new(Expr::Binary {
                 left: expr,
                 operator,
                 right,
             });
         }
-        expr
+        Ok(expr)
     }
 
-    fn term(&mut self) -> Box<Expr> {
-        let mut expr = self.factor();
+    fn term(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = self.factor()?;
 
         while self.match_(vec![MINUS, PLUS]) {
             let operator = self.previous().clone();
-            let right = self.factor();
+            let right = self.factor()?;
             expr = Box::new(Expr::Binary {
                 left: expr,
                 operator,
                 right,
             });
         }
-        expr
+        Ok(expr)
     }
 
-    fn factor(&mut self) -> Box<Expr> {
-        let mut expr = self.unary();
+    fn factor(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = self.unary()?;
 
         while self.match_(vec![SLASH, STAR]) {
             let operator = self.previous().clone();
-            let right = self.unary();
+            let right = self.unary()?;
             expr = Box::new(Expr::Binary {
                 left: expr,
                 operator,
                 right,
             });
         }
-        expr
+        Ok(expr)
     }
 
-    fn unary(&mut self) -> Box<Expr> {
+    fn unary(&mut self) -> Result<Box<Expr>, StaticError> {
         if self.match_(vec![BANG, MINUS]) {
             let operator = self.previous().clone();
-            let right = self.unary();
-            return Box::new(Expr::Unary { operator, right });
+            let right = self.unary()?;
+            return Ok(Box::new(Expr::Unary { operator, right }));
         }
         self.primary()
     }
 
-    fn primary(&mut self) -> Box<Expr> {
+    fn primary(&mut self) -> Result<Box<Expr>, StaticError> {
         let mut paren = false;
         let expr = match &self.peek().token_type {
             FALSE => Expr::LiteralNode(Literal::Boolean(false)),
@@ -115,19 +203,39 @@ impl Parser {
             STRING(s) | NUMBER(s) => Expr::LiteralNode(s.clone()),
             LeftParen => {
                 self.advance();
-                let exp = Expr::Grouping(self.expression());
-                self.consume(RightParen, "Expect ')' after expression");
+                let exp = Expr::Grouping(self.expression()?);
+                self.consume(RightParen, "Expect ')' after expression")?;
                 paren = true;
                 exp
             }
-            _ => error(self.peek(), "Expect expression"),
+            IDENTIFIER => Expr::Variable {
+                name: self.peek().clone(),
+            },
+            _ => StaticError::new(self.peek().clone(), "Expect expression")?,
         };
         if !paren {
             self.advance();
         }
-        Box::new(expr)
+        Ok(Box::new(expr))
     }
 
+    fn assignment(&mut self) -> Result<Box<Expr>, StaticError> {
+        let expr = self.equality()?;
+        if self.match_(vec![EQUAL]) {
+            let value = self.assignment()?;
+            let equals = self.previous();
+            match &*expr {
+                Expr::Variable { name } => {
+                    return Ok(Box::new(Expr::Assign {
+                        name: name.clone(),
+                        value,
+                    }))
+                }
+                _ => StaticError::new(equals.clone(), "Invalid assignment target")?,
+            }
+        }
+        Ok(expr)
+    }
     fn match_(&mut self, types: Vec<TokenType>) -> bool {
         for type_ in types {
             if self.check(type_) {
@@ -137,11 +245,12 @@ impl Parser {
         }
         false
     }
-    fn consume(&mut self, type_: TokenType, msg: &str) -> &Token {
+    fn consume(&mut self, type_: TokenType, msg: &str) -> Result<&Token, StaticError> {
         if self.check(type_) {
-            return self.advance();
+            Ok(self.advance())
+        } else {
+            StaticError::new(self.peek().clone(), msg)?
         }
-        error(self.peek(), msg)
     }
     fn check(&self, type_: TokenType) -> bool {
         if self.is_at_end() {
