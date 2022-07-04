@@ -33,24 +33,42 @@ fn define_asts() -> String {
         ("Unary", vec!["Token operator", "Box<Expr> right"]),
         ("Variable", vec!["Token name"]),
         ("Assign", vec!["Token name", "Box<Expr> value"]),
+        (
+            "Logical",
+            vec!["Box<Expr> left", "Token operator", "Box<Expr> right"],
+        ),
     ];
-    define_ast(expr_enum_name, &types, &mut scope);
+    define_ast(expr_enum_name, &types, &mut scope, &[]);
 
     let stmt_enum_name = "Stmt";
+    let jump_name = "Jump";
     let types = [
         ("Expression", vec![expr_enum_name]),
         ("Print", vec![expr_enum_name]),
         ("Var", vec!["Token name", "Option<Expr> initializer"]),
         ("Block", vec!["Vec<Stmt> statements"]),
-
+        (
+            "If",
+            vec![
+                "Expr condition",
+                "Box<Stmt> thenBranch",
+                "Option<Box<Stmt>> elseBranch",
+            ],
+        ),
+        ("Control", vec![jump_name]),
+        ("While", vec!["Expr condition", "Box<Stmt> body"]),
     ];
-    define_ast(stmt_enum_name, &types, &mut scope);
-
+    define_ast(stmt_enum_name, &types, &mut scope, &[]);
+    let types = vec![("Break", vec![]), ("Continue", vec![])];
+    define_ast(jump_name, &types, &mut scope, &["Clone", "Copy"]);
     scope.to_string()
 }
 
-fn define_ast(name: &str, types: &[(&str, Vec<&str>)], scope: &mut Scope) {
+fn define_ast(name: &str, types: &[(&str, Vec<&str>)], scope: &mut Scope, traits: &[&str]) {
     let ast_enum = scope.new_enum(name).vis("pub");
+    for trait_d in traits {
+        ast_enum.derive(trait_d);
+    }
     for (name, fields) in types.iter() {
         let variant = ast_enum.new_variant(name);
         for field in fields {

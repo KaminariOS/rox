@@ -1,5 +1,7 @@
 use crate::environment::Environment;
-use crate::expr::{Expr, Stmt};
+use crate::expr::Stmt::While;
+use crate::expr::{Expr, Jump, Stmt};
+use crate::scanner::TokenType::TRUE;
 use crate::scanner::{Literal, Token, TokenType};
 use crate::types::Shared;
 use std::error::Error;
@@ -67,10 +69,7 @@ impl Interpreter {
                         Type::Primitive(Literal::Number(-num))
                     }
                     (TokenType::BANG, right_val) => {
-                        let bo = match right_val {
-                            Type::Object => true,
-                            Type::Primitive(literal) => is_truthy(literal),
-                        };
+                        let bo = is_truthy(&right_val);
                         Type::Primitive(Literal::Boolean(!bo))
                     }
                     _ => RuntimeError::new(operator.clone(), "Invalid unary operator")?,
@@ -139,44 +138,108 @@ impl Interpreter {
                 self.environment.borrow_mut().assign(name, val.clone())?;
                 val
             }
+            Expr::Logical {
+                left,
+                operator,
+                right,
+            } => {
+                let val = self.visit(left)?;
+                match operator.token_type {
+                    TokenType::AND => {
+                        if is_truthy(&val) {
+                            self.visit(right)?
+                        } else {
+                            val
+                        }
+                    }
+                    TokenType::OR => {
+                        if is_truthy(&val) {
+                            val
+                        } else {
+                            self.visit(right)?
+                        }
+                    }
+                    _ => RuntimeError::new(operator.clone(), "Invalid operator")?,
+                }
+            }
         };
         Ok(res)
     }
-    pub fn interpret_stmt(&mut self, statements: &Vec<Stmt>) -> Result<(), RuntimeError> {
+    pub fn interpret_stmts(
+        &mut self,
+        statements: &Vec<Stmt>,
+    ) -> Result<Option<Jump>, RuntimeError> {
         for statement in statements {
-            match statement {
-                Stmt::Expression(expr) => {
-                    let _ = self.interpret(expr)?;
-                }
-                Stmt::Print(expr) => {
-                    let val = self.interpret(expr)?;
-                    println!("{}", val);
-                }
-                Stmt::Var { name, initializer } => {
-                    let value = if let Some(init) = initializer {
-                        Some(self.interpret(init)?)
-                    } else {
-                        None
-                    };
-                    self.environment
-                        .borrow_mut()
-                        .define(name.lexeme.to_string(), value);
-                }
-                Stmt::Block { statements } => {
-                    self.execute_block(statements, self.environment.clone())?;
-                }
+            let res = self.interpret_stmt(statement)?;
+            if res.is_some() {
+                return Ok(res);
             }
         }
-        Ok(())
+        Ok(None)
+    }
+
+    pub fn interpret_stmt(&mut self, statement: &Stmt) -> Result<Option<Jump>, RuntimeError> {
+        match statement {
+            Stmt::Expression(expr) => {
+                let _ = self.interpret(expr)?;
+            }
+            Stmt::Print(expr) => {
+                let val = self.interpret(expr)?;
+                println!("{}", val);
+            }
+            Stmt::Var { name, initializer } => {
+                let value = if let Some(init) = initializer {
+                    Some(self.interpret(init)?)
+                } else {
+                    None
+                };
+                self.environment
+                    .borrow_mut()
+                    .define(name.lexeme.to_string(), value);
+            }
+            Stmt::Block { statements } => {
+                let res = self.execute_block(statements, self.environment.clone())?;
+                if res.is_some() {
+                    return Ok(res);
+                }
+            }
+            Stmt::If {
+                condition,
+                thenBranch,
+                elseBranch,
+            } => {
+                let val = self.visit(condition)?;
+                let res = if is_truthy(&val) {
+                    self.interpret_stmt(thenBranch)?
+                } else if let Some(else_statement) = elseBranch {
+                    self.interpret_stmt(else_statement)?
+                } else {
+                    None
+                };
+                if res.is_some() {
+                    return Ok(res);
+                }
+            }
+            Stmt::While { condition, body } => {
+                while is_truthy(&self.visit(condition)?) {
+                    let res = self.interpret_stmt(body)?;
+                    if let Some(Jump::Break) = res {
+                        break;
+                    }
+                }
+            }
+            Stmt::Control(jump) => return Ok(Some(*jump)),
+        }
+        Ok(None)
     }
     fn execute_block(
         &mut self,
         statements: &Vec<Stmt>,
         previous: Shared<Environment>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Option<Jump>, RuntimeError> {
         let env = Environment::new(Some(previous.clone()));
         self.environment = env;
-        let res = self.interpret_stmt(statements);
+        let res = self.interpret_stmts(statements);
         self.environment = previous;
         res
     }
@@ -187,9 +250,12 @@ impl Interpreter {
     }
 }
 
-fn is_truthy(val: Literal) -> bool {
+fn is_truthy(val: &Type) -> bool {
     match val {
-        Literal::NIL | Literal::Boolean(false) => false,
+        Type::Primitive(l) => match l {
+            Literal::NIL | Literal::Boolean(false) => false,
+            _ => true,
+        },
         _ => true,
     }
 }

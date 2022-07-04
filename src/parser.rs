@@ -1,4 +1,4 @@
-use crate::expr::{Expr, Stmt};
+use crate::expr::{Expr, Jump, Stmt};
 use crate::scanner::{Literal, Token, TokenType, TokenType::*};
 use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
@@ -40,7 +40,7 @@ impl Parser {
             && repl
             && tokens
                 .get(len - 2)
-                .filter(|x| x.token_type != SEMICOLON)
+                .filter(|x| x.token_type != SEMICOLON && x.token_type != RightBrace)
                 .is_some()
         {
             tokens.insert(
@@ -69,37 +69,128 @@ impl Parser {
     pub(crate) fn parse(&mut self) -> Result<Vec<Stmt>, StaticError> {
         let mut stmts = vec![];
         while !self.is_at_end() {
-            stmts.push(self.declaration()?);
+            stmts.push(self.declaration(false)?);
         }
         Ok(stmts)
     }
 
-    fn statement(&mut self) -> Result<Stmt, StaticError> {
-        if self.match_(vec![PRINT]) {
+    fn statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+        if self.match_(vec![FOR]) {
+            self.for_statement()
+        } else if self.match_(vec![IF]) {
+            self.if_statement(in_loop)
+        } else if self.match_(vec![PRINT]) {
             self.print_statement()
+        } else if self.match_(vec![WHILE]) {
+            self.while_statement()
         } else if self.match_(vec![LeftBrace]) {
             Ok(Stmt::Block {
-                statements: self.block()?,
+                statements: self.block(in_loop)?,
             })
+        } else if self.match_(vec![BREAK, CONTINUE]) {
+            self.jump_statement(in_loop)
         } else {
             self.expression_statement()
         }
     }
 
-    fn block(&mut self) -> Result<Vec<Stmt>, StaticError> {
+    fn jump_statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+        let token = self.previous();
+        if !in_loop {
+            StaticError::new(
+                token.clone(),
+                &format!("{} statement can only exist in loop", token.lexeme),
+            )?
+        }
+        let res = match &token.token_type {
+            BREAK => Jump::Break,
+            CONTINUE => Jump::Continue,
+            _ => StaticError::new(token.clone(), "Invalid jump statement")?,
+        };
+        self.consume(SEMICOLON, &format!("Expect ';' after {}", token.lexeme))?;
+        Ok(Stmt::Control(res))
+    }
+
+    fn for_statement(&mut self) -> Result<Stmt, StaticError> {
+        self.consume(LeftParen, "Expect '(' after 'for'.");
+        let init: Option<Stmt> = if self.match_(vec![SEMICOLON]) {
+            None
+        } else if self.match_(vec![VAR]) {
+            Some(self.var_declaration()?)
+        } else {
+            Some(self.expression_statement()?)
+        };
+        let condition = if !self.check(SEMICOLON) {
+            Some(*self.expression()?)
+        } else {
+            None
+        };
+        self.consume(SEMICOLON, "Expect ';' after loop condition")?;
+        let increment = if !self.check(RightParen) {
+            Some(*self.expression()?)
+        } else {
+            None
+        };
+        self.consume(RightParen, "Expect ')' after for clause.")?;
+        let mut body = self.statement(true)?;
+        if let Some(increment) = increment {
+            body = Stmt::Block {
+                statements: vec![body, Stmt::Expression(increment)],
+            }
+        }
+        if let Some(condition) = condition {
+            body = Stmt::While {
+                condition,
+                body: Box::new(body),
+            };
+        }
+        if let Some(init) = init {
+            body = Stmt::Block {
+                statements: vec![init, body],
+            }
+        }
+        Ok(body)
+    }
+
+    fn while_statement(&mut self) -> Result<Stmt, StaticError> {
+        self.consume(LeftParen, "Expect '(' after 'while'.")?;
+        let condition = *self.expression()?;
+        self.consume(RightParen, "Expect ')' after 'while' condition")?;
+        let body = Box::new(self.statement(true)?);
+        Ok(Stmt::While { condition, body })
+    }
+
+    fn if_statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+        self.consume(LeftParen, "Expect '(' after 'if'.")?;
+        let expr = self.expression()?;
+        self.consume(RightParen, "Expect ')' after 'if' condition.")?;
+        let thenBranch = Box::new(self.statement(in_loop)?);
+        let elseBranch = if self.match_(vec![ELSE]) {
+            Some(Box::new(self.statement(in_loop)?))
+        } else {
+            None
+        };
+        Ok(Stmt::If {
+            condition: *expr,
+            thenBranch,
+            elseBranch,
+        })
+    }
+
+    fn block(&mut self, in_loop: bool) -> Result<Vec<Stmt>, StaticError> {
         let mut statements = vec![];
         while !self.check(RightBrace) {
-            statements.push(self.declaration()?);
+            statements.push(self.declaration(in_loop)?);
         }
         self.consume(RightBrace, "Expect '}' after block")?;
         Ok(statements)
     }
 
-    fn declaration(&mut self) -> Result<Stmt, StaticError> {
+    fn declaration(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
         if self.match_(vec![VAR]) {
             self.var_declaration()
         } else {
-            self.statement()
+            self.statement(in_loop)
         }
     }
     fn var_declaration(&mut self) -> Result<Stmt, StaticError> {
@@ -220,7 +311,7 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Box<Expr>, StaticError> {
-        let expr = self.equality()?;
+        let expr = self.or()?;
         if self.match_(vec![EQUAL]) {
             let value = self.assignment()?;
             let equals = self.previous();
@@ -236,6 +327,35 @@ impl Parser {
         }
         Ok(expr)
     }
+
+    fn or(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = self.and()?;
+        while self.match_(vec![OR]) {
+            let operator = self.previous().clone();
+            let right = self.and()?;
+            expr = Box::new(Expr::Logical {
+                left: expr,
+                right,
+                operator,
+            });
+        }
+        Ok(expr)
+    }
+
+    fn and(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = self.equality()?;
+        while self.match_(vec![AND]) {
+            let operator = self.previous().clone();
+            let right = self.equality()?;
+            expr = Box::new(Expr::Logical {
+                left: expr,
+                operator,
+                right,
+            });
+        }
+        Ok(expr)
+    }
+
     fn match_(&mut self, types: Vec<TokenType>) -> bool {
         for type_ in types {
             if self.check(type_) {

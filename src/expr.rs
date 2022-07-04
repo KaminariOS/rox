@@ -19,6 +19,11 @@ pub enum Expr {
         name: Token,
         value: Box<Expr>,
     },
+    Logical {
+        left: Box<Expr>,
+        operator: Token,
+        right: Box<Expr>,
+    },
 }
 
 pub enum Stmt {
@@ -31,4 +36,20 @@ pub enum Stmt {
     Block {
         statements: Vec<Stmt>,
     },
+    If {
+        condition: Expr,
+        thenBranch: Box<Stmt>,
+        elseBranch: Option<Box<Stmt>>,
+    },
+    Control(Jump),
+    While {
+        condition: Expr,
+        body: Box<Stmt>,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub enum Jump {
+    Break,
+    Continue,
 }

@@ -20,7 +20,9 @@ static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "this" => THIS,
     "true" => TRUE,
     "var" => VAR,
-    "while" => WHILE
+    "while" => WHILE,
+    "break" => BREAK,
+    "continue" => CONTINUE,
 };
 
 #[derive(Debug)]
@@ -98,7 +100,8 @@ pub enum TokenType {
     TRUE,
     VAR,
     WHILE,
-
+    BREAK,
+    CONTINUE,
     EOF,
 }
 

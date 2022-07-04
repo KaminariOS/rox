@@ -41,7 +41,7 @@ fn run(line: &str, interpreter: &mut Interpreter, repl: bool) -> Result<(), Box<
     scanner.scan_tokens()?;
     let mut parser = parser::Parser::new(scanner.tokens, repl);
     let statements = parser.parse()?;
-    interpreter.interpret_stmt(&statements)?;
+    interpreter.interpret_stmts(&statements)?;
     Ok(())
     // println!("{}", print_ast(expr))
 }
