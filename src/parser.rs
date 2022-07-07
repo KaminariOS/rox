@@ -84,16 +84,16 @@ impl<'a> Parser<'a> {
     pub(crate) fn parse(&mut self) -> Result<Vec<Stmt>, StaticError> {
         let mut stmts = vec![];
         while !self.is_at_end() {
-            stmts.push(self.declaration(false)?);
+            stmts.push(self.declaration()?);
         }
         Ok(stmts)
     }
 
-    fn statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+    fn statement(&mut self) -> Result<Stmt, StaticError> {
         if self.match_(vec![FOR]) {
             self.for_statement()
         } else if self.match_(vec![IF]) {
-            self.if_statement(in_loop)
+            self.if_statement()
         } else if self.match_(vec![PRINT]) {
             self.print_statement()
         } else if self.match_(vec![WHILE]) {
@@ -102,10 +102,10 @@ impl<'a> Parser<'a> {
             self.return_statement()
         } else if self.match_(vec![LeftBrace]) {
             Ok(Stmt::Block {
-                statements: self.block(in_loop)?,
+                statements: self.block()?,
             })
         } else if self.match_(vec![BREAK, CONTINUE]) {
-            self.jump_statement(in_loop)
+            self.jump_statement()
         } else {
             self.expression_statement()
         }
@@ -122,20 +122,14 @@ impl<'a> Parser<'a> {
         Ok(Stmt::Control(Jump::ReturnExpr { keyword, value }))
     }
 
-    fn jump_statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+    fn jump_statement(&mut self) -> Result<Stmt, StaticError> {
         let token = self.previous().clone();
-        if !in_loop {
-            StaticError::new(
-                token.clone(),
-                &format!("{} statement can only exist in loop", token.lexeme),
-            )?
-        }
+        self.consume(SEMICOLON, &format!("Expect ';' after {}", token.lexeme))?;
         let res = match &token.token_type {
-            BREAK => Jump::Break,
-            CONTINUE => Jump::Continue,
+            BREAK => Jump::Break { keyword: token },
+            CONTINUE => Jump::Continue { keyword: token },
             _ => StaticError::new(token.clone(), "Invalid jump statement")?,
         };
-        self.consume(SEMICOLON, &format!("Expect ';' after {}", token.lexeme))?;
         Ok(Stmt::Control(res))
     }
 
@@ -160,7 +154,7 @@ impl<'a> Parser<'a> {
             None
         };
         self.consume(RightParen, "Expect ')' after for clause.")?;
-        let mut body = self.statement(true)?;
+        let mut body = self.statement()?;
         if let Some(increment) = increment {
             body = Stmt::Block {
                 statements: vec![body, Stmt::Expression(increment)],
@@ -184,17 +178,17 @@ impl<'a> Parser<'a> {
         self.consume(LeftParen, "Expect '(' after 'while'.")?;
         let condition = *self.expression()?;
         self.consume(RightParen, "Expect ')' after 'while' condition")?;
-        let body = Box::new(self.statement(true)?);
+        let body = Box::new(self.statement()?);
         Ok(Stmt::While { condition, body })
     }
 
-    fn if_statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+    fn if_statement(&mut self) -> Result<Stmt, StaticError> {
         self.consume(LeftParen, "Expect '(' after 'if'.")?;
         let expr = self.expression()?;
         self.consume(RightParen, "Expect ')' after 'if' condition.")?;
-        let then_branch = Box::new(self.statement(in_loop)?);
+        let then_branch = Box::new(self.statement()?);
         let else_branch = if self.match_(vec![ELSE]) {
-            Some(Box::new(self.statement(in_loop)?))
+            Some(Box::new(self.statement()?))
         } else {
             None
         };
@@ -205,22 +199,22 @@ impl<'a> Parser<'a> {
         })
     }
 
-    fn block(&mut self, in_loop: bool) -> Result<Vec<Stmt>, StaticError> {
+    fn block(&mut self) -> Result<Vec<Stmt>, StaticError> {
         let mut statements = vec![];
         while !self.check(RightBrace) {
-            statements.push(self.declaration(in_loop)?);
+            statements.push(self.declaration()?);
         }
         self.consume(RightBrace, "Expect '}' after block")?;
         Ok(statements)
     }
 
-    fn declaration(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
+    fn declaration(&mut self) -> Result<Stmt, StaticError> {
         if self.match_(vec![FUN]) {
             self.function(CallableType::Function)
         } else if self.match_(vec![VAR]) {
             self.var_declaration()
         } else {
-            self.statement(in_loop)
+            self.statement()
         }
     }
 
@@ -244,7 +238,7 @@ impl<'a> Parser<'a> {
         }
         self.consume(RightParen, "Expect ')' after parameters.")?;
         self.consume(LeftBrace, &format!("Expect '{{' before {} body.", kind))?;
-        let body = self.block(false)?;
+        let body = self.block()?;
         Ok(Stmt::Function { name, params, body })
     }
 

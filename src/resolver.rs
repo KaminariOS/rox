@@ -4,9 +4,15 @@ use crate::scanner::Token;
 use crate::Interpreter;
 use std::collections::HashMap;
 
+enum FunctionType {
+    Function,
+}
+
 pub struct Resolver<'b, 'c: 'b> {
     interpreter: &'c mut Interpreter,
     scopes: Vec<HashMap<&'b str, bool>>,
+    current_function: Option<FunctionType>,
+    in_loop: bool,
 }
 
 impl<'b, 'c> Resolver<'b, 'c> {
@@ -14,6 +20,8 @@ impl<'b, 'c> Resolver<'b, 'c> {
         Self {
             interpreter,
             scopes: vec![],
+            current_function: None,
+            in_loop: false,
         }
     }
     pub fn resolve_statements(&mut self, statements: &'b [Stmt]) -> Result<(), StaticError> {
@@ -31,6 +39,17 @@ impl<'b, 'c> Resolver<'b, 'c> {
                 self.end_scope();
             }
             Stmt::Var { name, initializer } => {
+                if self
+                    .scopes
+                    .last()
+                    .and_then(|x| x.get(&name.lexeme as &str))
+                    .is_some()
+                {
+                    StaticError::new(
+                        name.clone(),
+                        "Already a variable with this name in this scope.",
+                    )?;
+                }
                 self.declare(name);
                 if let Some(init) = initializer {
                     self.resolve_expr(init)?;
@@ -40,7 +59,7 @@ impl<'b, 'c> Resolver<'b, 'c> {
             Stmt::Function { name, params, body } => {
                 self.declare(name);
                 self.define(name);
-                self.resolve_function(params, body)?;
+                self.resolve_function(params, body, Some(FunctionType::Function))?;
             }
             Stmt::Expression(expr) => {
                 self.resolve_expr(expr)?;
@@ -59,14 +78,33 @@ impl<'b, 'c> Resolver<'b, 'c> {
             Stmt::Print(expr) => {
                 self.resolve_expr(expr)?;
             }
-            Stmt::Control(Jump::ReturnExpr { value, .. }) => {
-                if let Some(expr) = value {
-                    self.resolve_expr(expr)?;
-                }
+            Stmt::Control(jump) => {
+                match jump {
+                    Jump::ReturnExpr { value, keyword } => {
+                        if self.current_function.is_none() {
+                            StaticError::new(keyword.clone(), "Can't return from top-level code.")?;
+                        }
+                        if let Some(expr) = value {
+                            self.resolve_expr(expr)?;
+                        }
+                    }
+                    Jump::Break { keyword } | Jump::Continue { keyword } => {
+                        if !self.in_loop {
+                            StaticError::new(
+                                keyword.clone(),
+                                "Can't break or continue when not in loop.",
+                            )?;
+                        }
+                    }
+                    _ => panic!(),
+                };
             }
             Stmt::While { condition, body } => {
                 self.resolve_expr(condition)?;
+                let old = self.in_loop;
+                self.in_loop = true;
                 self.resolve_statement(body)?;
+                self.in_loop = old;
             }
             _ => {}
         };
@@ -136,7 +174,10 @@ impl<'b, 'c> Resolver<'b, 'c> {
         &mut self,
         params: &'b [Token],
         body: &'b [Stmt],
+        function_type: Option<FunctionType>,
     ) -> Result<(), StaticError> {
+        let enclosing = self.current_function.take();
+        self.current_function = function_type;
         self.begin_scope();
         for param in params {
             self.declare(param);
@@ -144,6 +185,7 @@ impl<'b, 'c> Resolver<'b, 'c> {
         }
         self.resolve_statements(body)?;
         self.end_scope();
+        self.current_function = enclosing;
         Ok(())
     }
 

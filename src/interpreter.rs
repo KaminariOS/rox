@@ -280,8 +280,8 @@ impl Interpreter {
                     let res = self.interpret_stmt(body)?;
                     if let Some(j) = res {
                         match j {
-                            Jump::Break => break,
-                            Jump::Continue => continue,
+                            Jump::Break { .. } => break,
+                            Jump::Continue { .. } => continue,
                             re => return Ok(Some(re)),
                         }
                     }

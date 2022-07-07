@@ -69,8 +69,8 @@ fn define_asts() -> String {
     ];
     define_ast(stmt_enum_name, &types, &mut scope, &["Clone"]);
     let types = vec![
-        ("Break", vec![]),
-        ("Continue", vec![]),
+        ("Break", vec!["Token keyword"]),
+        ("Continue", vec!["Token keyword"]),
         ("ReturnExpr", vec!["Token keyword", "Option<Expr> value"]),
         ("ReturnValue", vec!["Token keyword", "Type value"]),
     ];

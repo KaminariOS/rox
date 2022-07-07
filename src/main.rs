@@ -21,19 +21,6 @@ mod parser;
 mod resolver;
 mod types;
 
-struct Statements {
-    statements: Vec<Stmt>,
-}
-
-impl Statements {
-    pub fn extend(&mut self, new_statements: Vec<Stmt>) -> &[Stmt] {
-        let cur_len = self.statements.len();
-        let len = new_statements.len();
-        self.statements.extend(new_statements);
-        &self.statements[cur_len..cur_len + len]
-    }
-}
-
 fn main() {
     let matches = command!()
         .arg(arg!([name] "Optional file name"))

@@ -65,8 +65,8 @@ pub enum Stmt {
 
 #[derive(Clone)]
 pub enum Jump {
-    Break,
-    Continue,
+    Break { keyword: Token },
+    Continue { keyword: Token },
     ReturnExpr { keyword: Token, value: Option<Expr> },
     ReturnValue { keyword: Token, value: Type },
 }
