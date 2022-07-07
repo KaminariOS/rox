@@ -1,5 +1,6 @@
 extern crate core;
 
+use crate::expr::Stmt;
 use ansi_rgb::{green, Foreground};
 use clap::{arg, command};
 use rustyline::error::ReadlineError;
@@ -11,12 +12,27 @@ mod ast_printer;
 mod expr;
 mod scanner;
 use crate::interpreter::{Interpreter, RuntimeError};
-use ast_printer::print_ast;
+use crate::resolver::Resolver;
 
 mod environment;
+mod function;
 mod interpreter;
 mod parser;
+mod resolver;
 mod types;
+
+struct Statements {
+    statements: Vec<Stmt>,
+}
+
+impl Statements {
+    pub fn extend(&mut self, new_statements: Vec<Stmt>) -> &[Stmt] {
+        let cur_len = self.statements.len();
+        let len = new_statements.len();
+        self.statements.extend(new_statements);
+        &self.statements[cur_len..cur_len + len]
+    }
+}
 
 fn main() {
     let matches = command!()
@@ -33,14 +49,20 @@ fn run_file(filename: &str) {
     println!("Running {}", filename);
     let contents = fs::read_to_string(filename).expect("Something went wrong reading the file");
     let mut interpreter = Interpreter::new();
-    run(&contents, &mut interpreter, false).expect("Error");
+    if let Err(e) = run(&contents, &mut interpreter, false) {
+        eprintln!("{}", e);
+    };
 }
 
-fn run(line: &str, interpreter: &mut Interpreter, repl: bool) -> Result<(), Box<dyn Error>> {
+fn run<'a>(line: &str, interpreter: &'a mut Interpreter, repl: bool) -> Result<(), Box<dyn Error>> {
     let mut scanner = scanner::Scanner::new(line);
     scanner.scan_tokens()?;
-    let mut parser = parser::Parser::new(scanner.tokens, repl);
-    let statements = parser.parse()?;
+    let statements = {
+        let mut parser = parser::Parser::new(scanner.tokens, repl, &mut interpreter.id);
+        parser.parse()?
+    };
+    // let block = Stmt::Block { statements };
+    Resolver::new(interpreter).resolve_statements(&statements)?;
     interpreter.interpret_stmts(&statements)?;
     Ok(())
     // println!("{}", print_ast(expr))

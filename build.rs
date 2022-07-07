@@ -22,6 +22,7 @@ fn define_asts() -> String {
     let mut scope = Scope::new();
     scope.import("crate::scanner", "Token");
     scope.import("crate::scanner", "Literal");
+    scope.import("crate::interpreter", "Type");
     let expr_enum_name = "Expr";
     let types = [
         (
@@ -31,14 +32,18 @@ fn define_asts() -> String {
         ("Grouping", vec!["Box<Expr>"]),
         ("LiteralNode", vec!["Literal"]),
         ("Unary", vec!["Token operator", "Box<Expr> right"]),
-        ("Variable", vec!["Token name"]),
-        ("Assign", vec!["Token name", "Box<Expr> value"]),
+        ("Variable", vec!["Token name", "usize id"]),
+        ("Assign", vec!["Token name", "Box<Expr> value", "usize id"]),
         (
             "Logical",
             vec!["Box<Expr> left", "Token operator", "Box<Expr> right"],
         ),
+        (
+            "Call",
+            vec!["Box<Expr> callee", "Token paren", "Vec<Expr> args"],
+        ),
     ];
-    define_ast(expr_enum_name, &types, &mut scope, &[]);
+    define_ast(expr_enum_name, &types, &mut scope, &["Clone"]);
 
     let stmt_enum_name = "Stmt";
     let jump_name = "Jump";
@@ -51,16 +56,25 @@ fn define_asts() -> String {
             "If",
             vec![
                 "Expr condition",
-                "Box<Stmt> thenBranch",
-                "Option<Box<Stmt>> elseBranch",
+                "Box<Stmt> then_branch",
+                "Option<Box<Stmt>> else_branch",
             ],
         ),
         ("Control", vec![jump_name]),
         ("While", vec!["Expr condition", "Box<Stmt> body"]),
+        (
+            "Function",
+            vec!["Token name", "Vec<Token> params", "Vec<Stmt> body"],
+        ),
     ];
-    define_ast(stmt_enum_name, &types, &mut scope, &[]);
-    let types = vec![("Break", vec![]), ("Continue", vec![])];
-    define_ast(jump_name, &types, &mut scope, &["Clone", "Copy"]);
+    define_ast(stmt_enum_name, &types, &mut scope, &["Clone"]);
+    let types = vec![
+        ("Break", vec![]),
+        ("Continue", vec![]),
+        ("ReturnExpr", vec!["Token keyword", "Option<Expr> value"]),
+        ("ReturnValue", vec!["Token keyword", "Type value"]),
+    ];
+    define_ast(jump_name, &types, &mut scope, &["Clone"]);
     scope.to_string()
 }
 

@@ -1,5 +1,4 @@
 use crate::expr::Expr;
-use std::sync::Arc;
 
 pub fn print_ast(expr: Box<Expr>) -> String {
     match *expr {
@@ -19,7 +18,7 @@ pub fn print_ast(expr: Box<Expr>) -> String {
         Expr::Unary { operator, right } => {
             format!("({} {})", operator, print_ast(right))
         }
-        Expr::Variable { name } => {
+        Expr::Variable { name, .. } => {
             format!("{}", name)
         }
         _ => "".to_owned(),

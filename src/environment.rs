@@ -19,6 +19,7 @@ impl Environment {
     pub fn define(&mut self, name: String, val: Option<Type>) {
         self.values.insert(name, val);
     }
+
     pub fn assign(&mut self, name: &Token, val: Type) -> Result<(), RuntimeError> {
         let id = &*name.lexeme;
         if let Some(value) = self.values.get_mut(id) {
@@ -31,6 +32,7 @@ impl Environment {
             RuntimeError::new(name.clone(), "Undefined variable")
         }
     }
+
     pub fn get(&self, name: &Token) -> Option<Option<Type>> {
         let id = &*name.lexeme;
         let res = self.values.get(id);
@@ -48,5 +50,46 @@ impl Environment {
             Type::Primitive(l) => Type::Primitive(l.clone()),
             val => val.clone(),
         }
+    }
+
+    pub fn get_at(&self, distance: usize, name: &str) -> Option<Option<Type>> {
+        if distance == 0 {
+            return self.values.get(name).map(|x| x.as_ref().map(|x| x.clone()));
+        }
+        if let Some(env) = self.ancestor(distance) {
+            env.borrow()
+                .values
+                .get(name)
+                .map(|x| x.as_ref().map(|x| x.clone()))
+        } else {
+            None
+        }
+    }
+    fn ancestor(&self, distance: usize) -> Option<Shared<Environment>> {
+        let mut env = self.enclosing.clone();
+        for _ in 1..distance {
+            if let Some(enc) = env {
+                env = enc.borrow().enclosing.clone();
+            } else {
+                return None;
+            }
+        }
+        env
+    }
+
+    pub fn assign_at(
+        &mut self,
+        distance: usize,
+        val: Type,
+        name: &Token,
+    ) -> Result<(), RuntimeError> {
+        if distance == 0 {
+            self.assign(name, val.clone())?;
+        } else if let Some(env) = self.ancestor(distance) {
+            env.borrow_mut().assign(name, val)?;
+        } else {
+            RuntimeError::new(name.clone(), "Undefined variable")?;
+        }
+        Ok(())
     }
 }

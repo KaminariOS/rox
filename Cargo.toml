@@ -8,6 +8,7 @@ description = "A Lox interpreter"
 
 [dependencies]
 ansi_rgb = "0.2.0"
+by_address = "1.0.4"
 clap = {version = "3.1.6", features = ["cargo"]}
 phf = { version = "0.10.1", features = ["macros"]}
 regex = "1.5.5"

@@ -1,5 +1,7 @@
+use crate::interpreter::Type;
 use crate::scanner::{Literal, Token};
 
+#[derive(Clone)]
 pub enum Expr {
     Binary {
         left: Box<Expr>,
@@ -14,18 +16,26 @@ pub enum Expr {
     },
     Variable {
         name: Token,
+        id: usize,
     },
     Assign {
         name: Token,
         value: Box<Expr>,
+        id: usize,
     },
     Logical {
         left: Box<Expr>,
         operator: Token,
         right: Box<Expr>,
     },
+    Call {
+        callee: Box<Expr>,
+        paren: Token,
+        args: Vec<Expr>,
+    },
 }
 
+#[derive(Clone)]
 pub enum Stmt {
     Expression(Expr),
     Print(Expr),
@@ -38,18 +48,25 @@ pub enum Stmt {
     },
     If {
         condition: Expr,
-        thenBranch: Box<Stmt>,
-        elseBranch: Option<Box<Stmt>>,
+        then_branch: Box<Stmt>,
+        else_branch: Option<Box<Stmt>>,
     },
     Control(Jump),
     While {
         condition: Expr,
         body: Box<Stmt>,
     },
+    Function {
+        name: Token,
+        params: Vec<Token>,
+        body: Vec<Stmt>,
+    },
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum Jump {
     Break,
     Continue,
+    ReturnExpr { keyword: Token, value: Option<Expr> },
+    ReturnValue { keyword: Token, value: Type },
 }

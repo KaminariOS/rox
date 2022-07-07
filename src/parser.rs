@@ -10,8 +10,23 @@ pub struct StaticError {
     msg: String,
 }
 
+pub enum CallableType {
+    Function,
+    Method,
+}
+
+impl Display for CallableType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            Self::Function => "function",
+            Self::Method => "Method",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 impl StaticError {
-    fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
+    pub fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
         Err(Self {
             token,
             msg: msg.to_string(),
@@ -27,14 +42,14 @@ impl Display for StaticError {
 
 impl Error for StaticError {}
 
-pub struct Parser {
+pub struct Parser<'a> {
     tokens: Vec<Token>,
     current: usize,
-    repl: bool,
+    id: &'a mut usize,
 }
 
-impl Parser {
-    pub fn new(mut tokens: Vec<Token>, repl: bool) -> Self {
+impl<'a> Parser<'a> {
+    pub fn new(mut tokens: Vec<Token>, repl: bool, id: &'a mut usize) -> Self {
         let len = tokens.len();
         if !tokens.is_empty()
             && repl
@@ -63,7 +78,7 @@ impl Parser {
         Self {
             tokens,
             current: 0,
-            repl,
+            id,
         }
     }
     pub(crate) fn parse(&mut self) -> Result<Vec<Stmt>, StaticError> {
@@ -83,6 +98,8 @@ impl Parser {
             self.print_statement()
         } else if self.match_(vec![WHILE]) {
             self.while_statement()
+        } else if self.match_(vec![RETURN]) {
+            self.return_statement()
         } else if self.match_(vec![LeftBrace]) {
             Ok(Stmt::Block {
                 statements: self.block(in_loop)?,
@@ -94,8 +111,19 @@ impl Parser {
         }
     }
 
+    fn return_statement(&mut self) -> Result<Stmt, StaticError> {
+        let keyword = self.previous().clone();
+        let value = if !self.check(SEMICOLON) {
+            Some(*self.expression()?)
+        } else {
+            None
+        };
+        self.consume(SEMICOLON, "Expect ';' after return value.")?;
+        Ok(Stmt::Control(Jump::ReturnExpr { keyword, value }))
+    }
+
     fn jump_statement(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
-        let token = self.previous();
+        let token = self.previous().clone();
         if !in_loop {
             StaticError::new(
                 token.clone(),
@@ -112,7 +140,7 @@ impl Parser {
     }
 
     fn for_statement(&mut self) -> Result<Stmt, StaticError> {
-        self.consume(LeftParen, "Expect '(' after 'for'.");
+        self.consume(LeftParen, "Expect '(' after 'for'.")?;
         let init: Option<Stmt> = if self.match_(vec![SEMICOLON]) {
             None
         } else if self.match_(vec![VAR]) {
@@ -164,16 +192,16 @@ impl Parser {
         self.consume(LeftParen, "Expect '(' after 'if'.")?;
         let expr = self.expression()?;
         self.consume(RightParen, "Expect ')' after 'if' condition.")?;
-        let thenBranch = Box::new(self.statement(in_loop)?);
-        let elseBranch = if self.match_(vec![ELSE]) {
+        let then_branch = Box::new(self.statement(in_loop)?);
+        let else_branch = if self.match_(vec![ELSE]) {
             Some(Box::new(self.statement(in_loop)?))
         } else {
             None
         };
         Ok(Stmt::If {
             condition: *expr,
-            thenBranch,
-            elseBranch,
+            then_branch,
+            else_branch,
         })
     }
 
@@ -187,12 +215,39 @@ impl Parser {
     }
 
     fn declaration(&mut self, in_loop: bool) -> Result<Stmt, StaticError> {
-        if self.match_(vec![VAR]) {
+        if self.match_(vec![FUN]) {
+            self.function(CallableType::Function)
+        } else if self.match_(vec![VAR]) {
             self.var_declaration()
         } else {
             self.statement(in_loop)
         }
     }
+
+    fn function(&mut self, kind: CallableType) -> Result<Stmt, StaticError> {
+        let kind = kind.to_string();
+        let name = self
+            .consume(IDENTIFIER, &format!("Expect {} name", kind))?
+            .clone();
+        self.consume(LeftParen, &format!("Expect '(' after {} name", kind))?;
+        let mut params = vec![];
+        if !self.check(RightParen) {
+            loop {
+                if params.len() >= 255 {
+                    StaticError::new(name.clone(), "Can't have more than 255 parameters")?;
+                }
+                params.push(self.consume(IDENTIFIER, "Expect parameter name.")?.clone());
+                if !self.match_(vec![COMMA]) {
+                    break;
+                }
+            }
+        }
+        self.consume(RightParen, "Expect ')' after parameters.")?;
+        self.consume(LeftBrace, &format!("Expect '{{' before {} body.", kind))?;
+        let body = self.block(false)?;
+        Ok(Stmt::Function { name, params, body })
+    }
+
     fn var_declaration(&mut self) -> Result<Stmt, StaticError> {
         let name = self.consume(IDENTIFIER, "Expect variable name.")?.clone();
         let initializer = if self.match_(vec![EQUAL]) {
@@ -282,7 +337,43 @@ impl Parser {
             let right = self.unary()?;
             return Ok(Box::new(Expr::Unary { operator, right }));
         }
-        self.primary()
+        self.call()
+    }
+
+    fn call(&mut self) -> Result<Box<Expr>, StaticError> {
+        let mut expr = *self.primary()?;
+        loop {
+            if self.match_(vec![LeftParen]) {
+                expr = self.finish_call(expr)?;
+            } else {
+                break;
+            }
+        }
+        Ok(Box::new(expr))
+    }
+
+    fn finish_call(&mut self, callee: Expr) -> Result<Expr, StaticError> {
+        let mut args = vec![];
+        if !self.check(RightParen) {
+            loop {
+                args.push(*self.expression()?);
+                if args.len() >= 255 {
+                    eprintln!("{} Can' t have more than 255 arguments", self.peek());
+                    break;
+                }
+                if !self.match_(vec![COMMA]) {
+                    break;
+                }
+            }
+        }
+        let paren = self
+            .consume(RightParen, "Expect ')' after arguments")?
+            .clone();
+        Ok(Expr::Call {
+            callee: Box::new(callee),
+            paren,
+            args,
+        })
     }
 
     fn primary(&mut self) -> Result<Box<Expr>, StaticError> {
@@ -299,9 +390,14 @@ impl Parser {
                 paren = true;
                 exp
             }
-            IDENTIFIER => Expr::Variable {
-                name: self.peek().clone(),
-            },
+            IDENTIFIER => {
+                let expr = Expr::Variable {
+                    name: self.peek().clone(),
+                    id: *self.id,
+                };
+                *self.id += 1;
+                expr
+            }
             _ => StaticError::new(self.peek().clone(), "Expect expression")?,
         };
         if !paren {
@@ -316,10 +412,11 @@ impl Parser {
             let value = self.assignment()?;
             let equals = self.previous();
             match &*expr {
-                Expr::Variable { name } => {
+                Expr::Variable { name, id } => {
                     return Ok(Box::new(Expr::Assign {
                         name: name.clone(),
                         value,
+                        id: *id,
                     }))
                 }
                 _ => StaticError::new(equals.clone(), "Invalid assignment target")?,

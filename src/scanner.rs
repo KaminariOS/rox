@@ -223,7 +223,11 @@ impl Scanner {
                     } else if self.match_char('*') {
                         while !self.is_at_end() {
                             match (self.peek(), self.peek_next()) {
-                                (Some(ch), Some(ch1)) if ch == '*' && ch1 == '/' => break,
+                                (Some('*'), Some('/')) => break,
+                                (Some('\n'), _) => {
+                                    self.line += 1;
+                                    self.advance();
+                                }
                                 _ => {
                                     self.advance();
                                 }

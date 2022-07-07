@@ -1,17 +1,19 @@
 use crate::environment::Environment;
-use crate::expr::Stmt::While;
 use crate::expr::{Expr, Jump, Stmt};
-use crate::scanner::TokenType::TRUE;
+use crate::function::{Callable, Clock, LoxFunction};
 use crate::scanner::{Literal, Token, TokenType};
 use crate::types::Shared;
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::rc::Rc;
 use std::sync::Arc;
 
 #[derive(Clone)]
 pub enum Type {
     Primitive(Literal),
     Object,
+    Function(Rc<dyn Callable>),
 }
 
 impl Display for Type {
@@ -19,6 +21,7 @@ impl Display for Type {
         match self {
             Self::Primitive(l) => write!(f, "{}", l),
             Self::Object => write!(f, "Object"),
+            Self::Function(func) => write!(f, "Function {}", func),
         }
     }
 }
@@ -47,13 +50,27 @@ impl Display for RuntimeError {
 impl Error for RuntimeError {}
 
 pub struct Interpreter {
-    environment: Shared<Environment>,
+    pub environment: Shared<Environment>,
+    pub globals: Shared<Environment>,
+    locals: HashMap<usize, usize>,
+    pub(crate) id: usize,
 }
 
 impl Interpreter {
+    pub fn resolve(&mut self, id: usize, dis: usize) {
+        self.locals.insert(id, dis);
+    }
+
     pub fn new() -> Self {
+        let env = Environment::new(None);
+        let clock = Clock;
+        env.borrow_mut()
+            .define(clock.name(), Some(Type::Function(Rc::new(clock))));
         Self {
-            environment: Environment::new(None),
+            environment: env.clone(),
+            globals: env,
+            locals: HashMap::new(),
+            id: 0,
         }
     }
 
@@ -124,18 +141,22 @@ impl Interpreter {
                     _ => RuntimeError::new(operator.clone(), "Unsupported binary operator")?,
                 }
             }
-            Expr::Variable { name } => {
+            Expr::Variable { name, id } => {
                 let val = self
-                    .environment
-                    .borrow()
-                    .get(name)
+                    .lookup_variable(name, id)
                     .and_then(|x| x)
                     .unwrap_or(Type::Primitive(Literal::NIL));
                 val
             }
-            Expr::Assign { name, value } => {
+            Expr::Assign { name, value, id } => {
                 let val = self.visit(value)?;
-                self.environment.borrow_mut().assign(name, val.clone())?;
+                if let Some(dis) = self.locals.get(id) {
+                    self.environment
+                        .borrow_mut()
+                        .assign_at(*dis, val.clone(), name)?;
+                } else {
+                    self.globals.borrow_mut().assign(name, val.clone())?;
+                }
                 val
             }
             Expr::Logical {
@@ -162,13 +183,40 @@ impl Interpreter {
                     _ => RuntimeError::new(operator.clone(), "Invalid operator")?,
                 }
             }
+            Expr::Call {
+                callee,
+                args,
+                paren,
+            } => {
+                let callee = self.visit(callee)?;
+                let token = Token {
+                    token_type: TokenType::IDENTIFIER,
+                    lexeme: Arc::new(callee.to_string()),
+                    line: paren.line,
+                };
+                let func = if let Type::Function(callee) = callee {
+                    callee
+                } else {
+                    RuntimeError::new(token.clone(), "Expect Callable")?
+                };
+
+                if func.arity() != args.len() {
+                    RuntimeError::new(
+                        token,
+                        &format!("Expect {} arguments but got {}.", func.arity(), args.len()),
+                    )?
+                }
+                let mut arguments = vec![];
+                for i in args {
+                    arguments.push(self.visit(i)?);
+                }
+                let old_env = self.environment.clone();
+                func.call(self, &arguments)?
+            }
         };
         Ok(res)
     }
-    pub fn interpret_stmts(
-        &mut self,
-        statements: &Vec<Stmt>,
-    ) -> Result<Option<Jump>, RuntimeError> {
+    pub fn interpret_stmts(&mut self, statements: &[Stmt]) -> Result<Option<Jump>, RuntimeError> {
         for statement in statements {
             let res = self.interpret_stmt(statement)?;
             if res.is_some() {
@@ -176,6 +224,13 @@ impl Interpreter {
             }
         }
         Ok(None)
+    }
+    fn lookup_variable(&self, name: &Token, id: &usize) -> Option<Option<Type>> {
+        if let Some(&distance) = self.locals.get(id) {
+            self.environment.borrow().get_at(distance, &name.lexeme)
+        } else {
+            self.globals.borrow().get(name)
+        }
     }
 
     pub fn interpret_stmt(&mut self, statement: &Stmt) -> Result<Option<Jump>, RuntimeError> {
@@ -205,13 +260,13 @@ impl Interpreter {
             }
             Stmt::If {
                 condition,
-                thenBranch,
-                elseBranch,
+                then_branch,
+                else_branch,
             } => {
                 let val = self.visit(condition)?;
                 let res = if is_truthy(&val) {
-                    self.interpret_stmt(thenBranch)?
-                } else if let Some(else_statement) = elseBranch {
+                    self.interpret_stmt(then_branch)?
+                } else if let Some(else_statement) = else_branch {
                     self.interpret_stmt(else_statement)?
                 } else {
                     None
@@ -223,25 +278,50 @@ impl Interpreter {
             Stmt::While { condition, body } => {
                 while is_truthy(&self.visit(condition)?) {
                     let res = self.interpret_stmt(body)?;
-                    if let Some(Jump::Break) = res {
-                        break;
+                    if let Some(j) = res {
+                        match j {
+                            Jump::Break => break,
+                            Jump::Continue => continue,
+                            re => return Ok(Some(re)),
+                        }
                     }
                 }
             }
-            Stmt::Control(jump) => return Ok(Some(*jump)),
+            Stmt::Control(jump) => {
+                let res = if let Jump::ReturnExpr { keyword, value } = jump {
+                    let res = if let Some(expr) = value {
+                        self.visit(expr)?
+                    } else {
+                        Type::Primitive(Literal::NIL)
+                    };
+                    Jump::ReturnValue {
+                        keyword: keyword.clone(),
+                        value: res,
+                    }
+                } else {
+                    jump.clone()
+                };
+                return Ok(Some(res));
+            }
+            Stmt::Function { name, params, body } => {
+                let func = LoxFunction::new(name, params, body, self.environment.clone());
+                self.environment
+                    .borrow_mut()
+                    .define(func.name(), Some(Type::Function(func)));
+            }
         }
         Ok(None)
     }
-    fn execute_block(
+    pub fn execute_block(
         &mut self,
         statements: &Vec<Stmt>,
         previous: Shared<Environment>,
     ) -> Result<Option<Jump>, RuntimeError> {
         let env = Environment::new(Some(previous.clone()));
         self.environment = env;
-        let res = self.interpret_stmts(statements);
+        let res = self.interpret_stmts(statements)?;
         self.environment = previous;
-        res
+        Ok(res)
     }
     pub fn interpret(&mut self, expr: &Expr) -> Result<Type, RuntimeError> {
         let res = self.visit(expr)?;
