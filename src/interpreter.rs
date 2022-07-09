@@ -1,3 +1,4 @@
+use crate::class::{Class, ClassInstancing, Instance};
 use crate::environment::Environment;
 use crate::expr::{Expr, Jump, Stmt};
 use crate::function::{Callable, Clock, LoxFunction};
@@ -12,7 +13,8 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub enum Type {
     Primitive(Literal),
-    Object,
+    ClassObject(Shared<Class>),
+    Object(Shared<Instance>),
     Function(Rc<dyn Callable>),
 }
 
@@ -20,8 +22,9 @@ impl Display for Type {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Primitive(l) => write!(f, "{}", l),
-            Self::Object => write!(f, "Object"),
-            Self::Function(func) => write!(f, "Function {}", func),
+            Self::Object(obj) => obj.borrow().fmt(f),
+            Self::ClassObject(class) => class.borrow().fmt(f),
+            Self::Function(func) => write!(f, "Function {}", func.to_string()),
         }
     }
 }
@@ -34,10 +37,13 @@ pub struct RuntimeError {
 
 impl RuntimeError {
     pub fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
-        Err(Self {
+        Err(Self::new_err(token, msg))
+    }
+    pub fn new_err(token: Token, msg: &str) -> Self {
+        Self {
             token,
             msg: msg.to_string(),
-        })
+        }
     }
 }
 
@@ -74,13 +80,13 @@ impl Interpreter {
         }
     }
 
-    pub fn visit(&mut self, expr: &Expr) -> Result<Type, RuntimeError> {
+    pub fn interpret(&mut self, expr: &Expr) -> Result<Type, RuntimeError> {
         let res = match expr {
             Expr::LiteralNode(literal) => Type::Primitive(literal.clone()),
-            Expr::Grouping(expr) => self.visit(expr)?,
+            Expr::Grouping(expr) => self.interpret(expr)?,
             Expr::Unary { operator, right } => {
                 let token_type = &operator.token_type;
-                let right_val = self.visit(right)?;
+                let right_val = self.interpret(right)?;
                 match (token_type, right_val) {
                     (TokenType::MINUS, Type::Primitive(Literal::Number(num))) => {
                         Type::Primitive(Literal::Number(-num))
@@ -98,8 +104,8 @@ impl Interpreter {
                 operator,
             } => {
                 let token_type = &operator.token_type;
-                let left = self.visit(left)?;
-                let right = self.visit(right)?;
+                let left = self.interpret(left)?;
+                let right = self.interpret(right)?;
                 match [left, right] {
                     lr if *token_type == TokenType::EqualEqual
                         || *token_type == TokenType::BangEqual =>
@@ -149,7 +155,7 @@ impl Interpreter {
                 val
             }
             Expr::Assign { name, value, id } => {
-                let val = self.visit(value)?;
+                let val = self.interpret(value)?;
                 if let Some(dis) = self.locals.get(id) {
                     self.environment
                         .borrow_mut()
@@ -164,11 +170,11 @@ impl Interpreter {
                 operator,
                 right,
             } => {
-                let val = self.visit(left)?;
+                let val = self.interpret(left)?;
                 match operator.token_type {
                     TokenType::AND => {
                         if is_truthy(&val) {
-                            self.visit(right)?
+                            self.interpret(right)?
                         } else {
                             val
                         }
@@ -177,7 +183,7 @@ impl Interpreter {
                         if is_truthy(&val) {
                             val
                         } else {
-                            self.visit(right)?
+                            self.interpret(right)?
                         }
                     }
                     _ => RuntimeError::new(operator.clone(), "Invalid operator")?,
@@ -188,18 +194,17 @@ impl Interpreter {
                 args,
                 paren,
             } => {
-                let callee = self.visit(callee)?;
+                let callee = self.interpret(callee)?;
                 let token = Token {
                     token_type: TokenType::IDENTIFIER,
                     lexeme: Arc::new(callee.to_string()),
                     line: paren.line,
                 };
-                let func = if let Type::Function(callee) = callee {
-                    callee
-                } else {
-                    RuntimeError::new(token.clone(), "Expect Callable")?
+                let func = match callee {
+                    Type::Function(callee) => callee,
+                    Type::ClassObject(class) => Rc::new(ClassInstancing { class }),
+                    _ => RuntimeError::new(token.clone(), "Expect Callable")?,
                 };
-
                 if func.arity() != args.len() {
                     RuntimeError::new(
                         token,
@@ -208,10 +213,76 @@ impl Interpreter {
                 }
                 let mut arguments = vec![];
                 for i in args {
-                    arguments.push(self.visit(i)?);
+                    arguments.push(self.interpret(i)?);
                 }
-                let old_env = self.environment.clone();
                 func.call(self, &arguments)?
+            }
+            Expr::Get { object, name } => {
+                let obj = self.interpret(object)?;
+                if let Type::Object(instance) = obj {
+                    instance.borrow().get(name, instance.clone())?
+                } else if let Type::ClassObject(class) = obj {
+                    Type::Function(
+                        class
+                            .borrow()
+                            .find_method(&name.lexeme, None)
+                            .ok_or(RuntimeError::new_err(name.clone(), "Method not found"))?,
+                    )
+                } else {
+                    RuntimeError::new(name.clone(), "Only instances and classes have properties")?
+                }
+            }
+            Expr::Set {
+                object,
+                name,
+                value,
+            } => {
+                let object = self.interpret(object)?;
+                if let Type::Object(instance) = object {
+                    let value = self.interpret(value)?;
+                    instance.borrow_mut().set(name, value.clone());
+                    value
+                } else {
+                    RuntimeError::new(name.clone(), "Only instances have fields.")?
+                }
+            }
+            Expr::This { id, keyword } => self
+                .lookup_variable(keyword, id)
+                .and_then(|x| x)
+                .expect("'this' should be in scope."),
+            Expr::Super {
+                method,
+                keyword,
+                id,
+            } => {
+                let &dis = self
+                    .locals
+                    .get(id)
+                    .ok_or(RuntimeError::new_err(keyword.clone(), "Super not found"))?;
+                if let Some(Type::ClassObject(superclass)) = self
+                    .environment
+                    .borrow()
+                    .get_at(dis, "super")
+                    .and_then(|x| x)
+                {
+                    let instance = if let Some(Type::Object(instance)) = self
+                        .environment
+                        .borrow()
+                        .get_at(dis - 1, "this")
+                        .and_then(|x| x)
+                    {
+                        Some(instance)
+                    } else {
+                        None
+                    };
+                    let method = superclass
+                        .borrow()
+                        .find_method(&method.lexeme, instance)
+                        .ok_or(RuntimeError::new_err(method.clone(), "Method not found"))?;
+                    Type::Function(method)
+                } else {
+                    RuntimeError::new(keyword.clone(), "Undefined superclass.")?
+                }
             }
         };
         Ok(res)
@@ -263,7 +334,7 @@ impl Interpreter {
                 then_branch,
                 else_branch,
             } => {
-                let val = self.visit(condition)?;
+                let val = self.interpret(condition)?;
                 let res = if is_truthy(&val) {
                     self.interpret_stmt(then_branch)?
                 } else if let Some(else_statement) = else_branch {
@@ -276,7 +347,7 @@ impl Interpreter {
                 }
             }
             Stmt::While { condition, body } => {
-                while is_truthy(&self.visit(condition)?) {
+                while is_truthy(&self.interpret(condition)?) {
                     let res = self.interpret_stmt(body)?;
                     if let Some(j) = res {
                         match j {
@@ -290,7 +361,7 @@ impl Interpreter {
             Stmt::Control(jump) => {
                 let res = if let Jump::ReturnExpr { keyword, value } = jump {
                     let res = if let Some(expr) = value {
-                        self.visit(expr)?
+                        self.interpret(expr)?
                     } else {
                         Type::Primitive(Literal::NIL)
                     };
@@ -305,28 +376,70 @@ impl Interpreter {
             }
             Stmt::Function { name, params, body } => {
                 let func = LoxFunction::new(name, params, body, self.environment.clone());
+
                 self.environment
                     .borrow_mut()
                     .define(func.name(), Some(Type::Function(func)));
+            }
+            Stmt::Class {
+                name,
+                methods,
+                superclass,
+            } => {
+                self.environment
+                    .borrow_mut()
+                    .define((&name.lexeme).to_string(), None);
+                let (superclass, old_env) = if let Some(sup) = superclass {
+                    let superclass = self.interpret(sup)?;
+                    if let Type::ClassObject(class) = superclass {
+                        let old_env = self.environment.clone();
+                        self.environment = Environment::new(Some(self.environment.clone()));
+                        self.environment
+                            .borrow_mut()
+                            .define("super".to_string(), Some(Type::ClassObject(class.clone())));
+                        (Some(class), Some(old_env))
+                    } else {
+                        RuntimeError::new(name.clone(), "Super class must be a class")?
+                    }
+                } else {
+                    (None, None)
+                };
+
+                let mut methods_map = HashMap::new();
+                for method in methods {
+                    if let Stmt::Function { name, params, body } = method {
+                        let method_obj = Type::Function(LoxFunction::new(
+                            name,
+                            params,
+                            body,
+                            self.environment.clone(),
+                        ));
+                        methods_map.insert((&name.lexeme).to_string(), method_obj);
+                    } else {
+                        RuntimeError::new(name.clone(), "Expect methods inside class body")?
+                    }
+                }
+                let klass = Class::new(&name.lexeme, methods_map, superclass);
+                if let Some(old_env) = old_env {
+                    self.environment = old_env;
+                }
+                self.environment
+                    .borrow_mut()
+                    .assign(name, Type::ClassObject(klass))?;
             }
         }
         Ok(None)
     }
     pub fn execute_block(
         &mut self,
-        statements: &Vec<Stmt>,
+        statements: &[Stmt],
         previous: Shared<Environment>,
     ) -> Result<Option<Jump>, RuntimeError> {
         let env = Environment::new(Some(previous.clone()));
         self.environment = env;
-        let res = self.interpret_stmts(statements)?;
+        let res = self.interpret_stmts(statements);
         self.environment = previous;
-        Ok(res)
-    }
-    pub fn interpret(&mut self, expr: &Expr) -> Result<Type, RuntimeError> {
-        let res = self.visit(expr)?;
-
-        Ok(res)
+        Ok(res?)
     }
 }
 
@@ -349,7 +462,7 @@ fn is_equal([left_type, right_type]: [Type; 2]) -> bool {
             [Literal::NIL, Literal::NIL] => true,
             _ => false,
         },
-        [Type::Object, Type::Object] => true,
+        [Type::Object(_), Type::Object(_)] => true,
         _ => false,
     }
 }

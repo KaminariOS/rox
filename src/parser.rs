@@ -27,10 +27,13 @@ impl Display for CallableType {
 
 impl StaticError {
     pub fn new<T>(token: Token, msg: &str) -> Result<T, Self> {
-        Err(Self {
+        Err(Self::new_err(token, msg))
+    }
+    pub fn new_err(token: Token, msg: &str) -> Self {
+        Self {
             token,
             msg: msg.to_string(),
-        })
+        }
     }
 }
 
@@ -49,6 +52,11 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
+    fn get_id(&mut self) -> usize {
+        let res = *self.id;
+        *self.id += 1;
+        res
+    }
     pub fn new(mut tokens: Vec<Token>, repl: bool, id: &'a mut usize) -> Self {
         let len = tokens.len();
         if !tokens.is_empty()
@@ -109,6 +117,34 @@ impl<'a> Parser<'a> {
         } else {
             self.expression_statement()
         }
+    }
+
+    fn class_declaration(&mut self) -> Result<Stmt, StaticError> {
+        let name = self.consume(IDENTIFIER, "Expect class name.")?.clone();
+        let superclass = if self.match_(vec![LESS]) {
+            let superclass_name = self.consume(IDENTIFIER, "Expect superclass name.")?.clone();
+            if superclass_name.lexeme == name.lexeme {
+                StaticError::new(superclass_name, "A class can't inherit from itself")?
+            } else {
+                Some(Expr::Variable {
+                    name: superclass_name,
+                    id: self.get_id(),
+                })
+            }
+        } else {
+            None
+        };
+        self.consume(LeftBrace, "Expect '{' before class body.")?;
+        let mut methods = vec![];
+        while !self.check(RightBrace) {
+            methods.push(self.function(CallableType::Method)?);
+        }
+        self.consume(RightBrace, "Expect '}' after class body.")?;
+        Ok(Stmt::Class {
+            name,
+            methods,
+            superclass,
+        })
     }
 
     fn return_statement(&mut self) -> Result<Stmt, StaticError> {
@@ -213,6 +249,8 @@ impl<'a> Parser<'a> {
             self.function(CallableType::Function)
         } else if self.match_(vec![VAR]) {
             self.var_declaration()
+        } else if self.match_(vec![CLASS]) {
+            self.class_declaration()
         } else {
             self.statement()
         }
@@ -252,16 +290,19 @@ impl<'a> Parser<'a> {
         self.consume(SEMICOLON, "Expect ';' after variable declaration")?;
         Ok(Stmt::Var { name, initializer })
     }
+
     fn print_statement(&mut self) -> Result<Stmt, StaticError> {
         let expr = self.expression()?;
         self.consume(SEMICOLON, "Expect ';' after value")?;
         Ok(Stmt::Print(*expr))
     }
+
     fn expression_statement(&mut self) -> Result<Stmt, StaticError> {
         let expr = self.expression()?;
         self.consume(SEMICOLON, "Expect ';' after expression")?;
         Ok(Stmt::Expression(*expr))
     }
+
     fn expression(&mut self) -> Result<Box<Expr>, StaticError> {
         self.assignment()
     }
@@ -339,6 +380,12 @@ impl<'a> Parser<'a> {
         loop {
             if self.match_(vec![LeftParen]) {
                 expr = self.finish_call(expr)?;
+            } else if self.match_(vec![DOT]) {
+                let name = self.consume(IDENTIFIER, "Expect property name after '.'.")?;
+                expr = Expr::Get {
+                    object: Box::new(expr),
+                    name: name.clone(),
+                };
             } else {
                 break;
             }
@@ -387,10 +434,29 @@ impl<'a> Parser<'a> {
             IDENTIFIER => {
                 let expr = Expr::Variable {
                     name: self.peek().clone(),
-                    id: *self.id,
+                    id: self.get_id(),
                 };
-                *self.id += 1;
                 expr
+            }
+            THIS => {
+                let expr = Expr::This {
+                    keyword: self.peek().clone(),
+                    id: self.get_id(),
+                };
+                expr
+            }
+            SUPER => {
+                paren = true;
+                let keyword = self.advance().clone();
+                self.consume(DOT, "Expect '.' after 'super'.")?;
+                let method = self
+                    .consume(IDENTIFIER, "Expect superclass method name.")?
+                    .clone();
+                Expr::Super {
+                    keyword,
+                    method,
+                    id: self.get_id(),
+                }
             }
             _ => StaticError::new(self.peek().clone(), "Expect expression")?,
         };
@@ -405,16 +471,20 @@ impl<'a> Parser<'a> {
         if self.match_(vec![EQUAL]) {
             let value = self.assignment()?;
             let equals = self.previous();
-            match &*expr {
-                Expr::Variable { name, id } => {
-                    return Ok(Box::new(Expr::Assign {
-                        name: name.clone(),
-                        value,
-                        id: *id,
-                    }))
-                }
+            let res = match *expr {
+                Expr::Variable { name, id } => Expr::Assign {
+                    name: name.clone(),
+                    value,
+                    id,
+                },
+                Expr::Get { object, name } => Expr::Set {
+                    object,
+                    value,
+                    name,
+                },
                 _ => StaticError::new(equals.clone(), "Invalid assignment target")?,
-            }
+            };
+            return Ok(Box::new(res));
         }
         Ok(expr)
     }

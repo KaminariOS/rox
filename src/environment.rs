@@ -29,7 +29,7 @@ impl Environment {
             enclosing.borrow_mut().assign(name, val)?;
             Ok(())
         } else {
-            RuntimeError::new(name.clone(), "Undefined variable")
+            RuntimeError::new(name.clone(), "Undeclared variable")
         }
     }
 

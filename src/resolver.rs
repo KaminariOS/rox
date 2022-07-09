@@ -1,18 +1,20 @@
 use crate::expr::{Expr, Jump, Stmt};
-use crate::parser::StaticError;
+use crate::parser::{CallableType, StaticError};
 use crate::scanner::Token;
 use crate::Interpreter;
 use std::collections::HashMap;
 
-enum FunctionType {
-    Function,
-}
-
 pub struct Resolver<'b, 'c: 'b> {
     interpreter: &'c mut Interpreter,
     scopes: Vec<HashMap<&'b str, bool>>,
-    current_function: Option<FunctionType>,
+    current_function: Option<CallableType>,
+    current_class: Option<ClassType>,
     in_loop: bool,
+}
+
+enum ClassType {
+    Class,
+    Subclass,
 }
 
 impl<'b, 'c> Resolver<'b, 'c> {
@@ -22,6 +24,7 @@ impl<'b, 'c> Resolver<'b, 'c> {
             scopes: vec![],
             current_function: None,
             in_loop: false,
+            current_class: None,
         }
     }
     pub fn resolve_statements(&mut self, statements: &'b [Stmt]) -> Result<(), StaticError> {
@@ -59,7 +62,7 @@ impl<'b, 'c> Resolver<'b, 'c> {
             Stmt::Function { name, params, body } => {
                 self.declare(name);
                 self.define(name);
-                self.resolve_function(params, body, Some(FunctionType::Function))?;
+                self.resolve_function(params, body, Some(CallableType::Function))?;
             }
             Stmt::Expression(expr) => {
                 self.resolve_expr(expr)?;
@@ -106,7 +109,30 @@ impl<'b, 'c> Resolver<'b, 'c> {
                 self.resolve_statement(body)?;
                 self.in_loop = old;
             }
-            _ => {}
+            Stmt::Class {
+                name,
+                methods,
+                superclass,
+            } => {
+                let pre_class = self.current_class.take();
+                self.current_class = Some(ClassType::Class);
+                self.declare(name);
+                self.define(name);
+                if let Some(expr) = superclass {
+                    self.current_class = Some(ClassType::Subclass);
+                    self.begin_scope();
+                    self.scopes.last_mut().map(|x| x.insert("super", true));
+                    self.resolve_expr(expr)?;
+                }
+                self.begin_scope();
+                self.scopes.last_mut().map(|x| x.insert("this", true));
+                self.resolve_statements(methods)?;
+                self.end_scope();
+                if superclass.is_some() {
+                    self.end_scope();
+                }
+                self.current_class = pre_class;
+            }
         };
         Ok(())
     }
@@ -165,6 +191,31 @@ impl<'b, 'c> Resolver<'b, 'c> {
             Expr::Unary { right, .. } => {
                 self.resolve_expr(right)?;
             }
+            Expr::Get { object, .. } => {
+                self.resolve_expr(object)?;
+            }
+            Expr::Set { value, object, .. } => {
+                self.resolve_expr(value)?;
+                self.resolve_expr(object)?;
+            }
+            Expr::This { keyword, id } => {
+                if self.current_class.is_none() {
+                    StaticError::new(keyword.clone(), "Can't use 'this' outside of a class")?
+                }
+                self.resolve_local(*id, &*keyword.lexeme);
+            }
+            Expr::Super { keyword, id, .. } => {
+                match self.current_class.as_ref().ok_or(StaticError::new_err(
+                    keyword.clone(),
+                    "Can't use 'super' outside of a class.",
+                ))? {
+                    ClassType::Class => StaticError::new(
+                        keyword.clone(),
+                        "Can't use 'super' in a class with no superclass.",
+                    )?,
+                    ClassType::Subclass => self.resolve_local(*id, &keyword.lexeme),
+                }
+            }
             _ => {}
         };
         Ok(())
@@ -174,7 +225,7 @@ impl<'b, 'c> Resolver<'b, 'c> {
         &mut self,
         params: &'b [Token],
         body: &'b [Stmt],
-        function_type: Option<FunctionType>,
+        function_type: Option<CallableType>,
     ) -> Result<(), StaticError> {
         let enclosing = self.current_function.take();
         self.current_function = function_type;

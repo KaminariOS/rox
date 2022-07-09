@@ -1,3 +1,4 @@
+use crate::class::Instance;
 use crate::environment::Environment;
 use crate::expr::{Jump, Stmt};
 use crate::interpreter::Type;
@@ -10,8 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub trait Callable {
     fn arity(&self) -> usize;
-    fn call(&self, interpreter: &mut Interpreter, args: &Vec<Type>) -> Result<Type, RuntimeError>;
+    fn call(&self, interpreter: &mut Interpreter, args: &[Type]) -> Result<Type, RuntimeError>;
     fn name(&self) -> String;
+    fn bind(&self, instance: Option<Shared<Instance>>) -> Rc<LoxFunction>;
 }
 
 impl Display for dyn Callable {
@@ -27,7 +29,7 @@ impl Callable for Clock {
         0
     }
 
-    fn call(&self, _: &mut Interpreter, _: &Vec<Type>) -> Result<Type, RuntimeError> {
+    fn call(&self, _: &mut Interpreter, _: &[Type]) -> Result<Type, RuntimeError> {
         let start = SystemTime::now();
         let since_the_epoch = start
             .duration_since(UNIX_EPOCH)
@@ -39,6 +41,10 @@ impl Callable for Clock {
 
     fn name(&self) -> String {
         "clock".to_string()
+    }
+
+    fn bind(&self, _instance: Option<Shared<Instance>>) -> Rc<LoxFunction> {
+        panic!("No bind for native function")
     }
 }
 
@@ -52,8 +58,8 @@ pub struct LoxFunction {
 impl LoxFunction {
     pub fn new(
         name: &Token,
-        params: &Vec<Token>,
-        body: &Vec<Stmt>,
+        params: &[Token],
+        body: &[Stmt],
         closure: Shared<Environment>,
     ) -> Rc<Self> {
         Rc::new(Self {
@@ -76,7 +82,7 @@ impl Callable for LoxFunction {
         self.params.len()
     }
 
-    fn call(&self, interpreter: &mut Interpreter, args: &Vec<Type>) -> Result<Type, RuntimeError> {
+    fn call(&self, interpreter: &mut Interpreter, args: &[Type]) -> Result<Type, RuntimeError> {
         let old_env = interpreter.environment.clone();
         let environment = Environment::new(Some(self.closure.clone()));
         {
@@ -99,5 +105,14 @@ impl Callable for LoxFunction {
 
     fn name(&self) -> String {
         self.name.to_string()
+    }
+
+    fn bind(&self, instance: Option<Shared<Instance>>) -> Rc<LoxFunction> {
+        let env = Environment::new(Some(self.closure.clone()));
+        if let Some(instance) = instance {
+            env.borrow_mut()
+                .define("this".to_string(), Some(Type::Object(instance)));
+        }
+        Self::new(&self.name, &self.params, &self.body, env)
     }
 }

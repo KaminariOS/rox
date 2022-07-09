@@ -1,5 +1,7 @@
 use crate::expr::Expr;
+use std::sync::Arc;
 
+#[allow(dead_code)]
 pub fn print_ast(expr: Box<Expr>) -> String {
     match *expr {
         Expr::Binary {

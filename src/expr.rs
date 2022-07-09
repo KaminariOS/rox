@@ -33,6 +33,24 @@ pub enum Expr {
         paren: Token,
         args: Vec<Expr>,
     },
+    Get {
+        object: Box<Expr>,
+        name: Token,
+    },
+    Set {
+        object: Box<Expr>,
+        name: Token,
+        value: Box<Expr>,
+    },
+    This {
+        keyword: Token,
+        id: usize,
+    },
+    Super {
+        keyword: Token,
+        method: Token,
+        id: usize,
+    },
 }
 
 #[derive(Clone)]
@@ -60,6 +78,11 @@ pub enum Stmt {
         name: Token,
         params: Vec<Token>,
         body: Vec<Stmt>,
+    },
+    Class {
+        name: Token,
+        methods: Vec<Stmt>,
+        superclass: Option<Expr>,
     },
 }
 

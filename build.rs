@@ -42,6 +42,13 @@ fn define_asts() -> String {
             "Call",
             vec!["Box<Expr> callee", "Token paren", "Vec<Expr> args"],
         ),
+        ("Get", vec!["Box<Expr> object", "Token name"]),
+        (
+            "Set",
+            vec!["Box<Expr> object", "Token name", "Box<Expr> value"],
+        ),
+        ("This", vec!["Token keyword", "usize id"]),
+        ("Super", vec!["Token keyword", "Token method", "usize id"]),
     ];
     define_ast(expr_enum_name, &types, &mut scope, &["Clone"]);
 
@@ -65,6 +72,10 @@ fn define_asts() -> String {
         (
             "Function",
             vec!["Token name", "Vec<Token> params", "Vec<Stmt> body"],
+        ),
+        (
+            "Class",
+            vec!["Token name", "Vec<Stmt> methods", "Option<Expr> superclass"],
         ),
     ];
     define_ast(stmt_enum_name, &types, &mut scope, &["Clone"]);

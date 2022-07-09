@@ -1,6 +1,5 @@
 extern crate core;
 
-use crate::expr::Stmt;
 use ansi_rgb::{green, Foreground};
 use clap::{arg, command};
 use rustyline::error::ReadlineError;
@@ -9,6 +8,7 @@ use std::error::Error;
 use std::fs;
 
 mod ast_printer;
+mod class;
 mod expr;
 mod scanner;
 use crate::interpreter::{Interpreter, RuntimeError};
